@@ -1,0 +1,722 @@
+---
+output: 
+  bookdown::pdf_document2:
+    number_sections: no
+    toc: no
+    highlight: tango
+    keep_tex: yes
+geometry: margin=0.8cm
+header-includes:
+- \usepackage[spanish]{babel}
+- \usepackage{bbm}
+- \usepackage{float}
+- \decimalpoint
+- \pagestyle{empty}
+linkcolor: blue
+---
+
+```{r setup, include=FALSE}
+#Empezamos limpiando nuestro ambiente
+rm(list = ls(all.names = TRUE))
+
+# Configuración global de los bloques de código (chunk's)
+knitr::opts_chunk$set(
+	echo = FALSE,
+	fig.align = "center",
+	fig.dim = c(5.24,3.24),
+	fig.pos = "H",
+#Agregamos configuraciones para evitar mensajes de advertencias y de errores en el archivo
+	message = FALSE,
+	warning = FALSE,
+	error = F
+)
+
+
+
+# Librerías 
+library(faraway)    #Contiene nuestros datos
+library(ISLR)
+library(caret)
+library(MASS)
+library(glmnet)
+
+library(dplyr)      # Para el manejo de datos
+library(ggplot2)    # Para realizar gráficas
+library(kableExtra) # Para un mejor manejo de tablas
+library(GGally)     # Para realizar análisis descriptivo fácilmente
+library(multcomp)   # Para pruebas de hipótesis
+library(car)        # Para funciones útiles de modelos de regresión lineal múltiple
+library(broom)      # Para obtener los residuales estandarizados
+library(ISLR)       # Para la base de datos
+library(leaps)      # Para el cálculo de los mejores conjuntos de variables por diversos métodos
+library(bestglm)    # Para obtener el mejor subconjunto
+library(glmnet)     # Para utilizar la penalización Lasso
+
+library(gridExtra)
+```
+
+## Ejercicio 1: Predicción en el caso continuo
+
+Considere la base de datos fat del paquete faraway, considere todas las variables, excepto siri, density y free. También eliminé del análisis los casos con valores extraños en weight y height, así como valores cero en brozek. Suponga que el objetivo del estudio es usar las variables clínicas observadas en los pacientes para predecir el porcentaje de grasa corporal en los hombres (var brozek).
+
+### Solución:
+
+```{r prep 1, include=FALSE}
+# Importamos los datos y quitamos las variables siri, density, free
+help(faraway)
+data <- fat
+data$density <- NULL
+data$siri <- NULL
+data$free <- NULL
+
+# En la estructura de los datos hay outliers raros en height y weight
+str(data)
+summary(data)
+```
+
+En la figura \@ref(fig:boxplots) se muestran los boxplots correspondientes a los valores que se tienen para las variables $height$ y $weight$.
+
+```{r boxplots, echo=FALSE, fig.cap="Boxplot de las variables height (izquierda) y weight (derecha)"}
+bxplt_height <- ggplot(data, aes(y = height)) +
+  geom_boxplot() +
+  labs(title = "Height", y = "ins (pulgadas)")
+
+bxplt_weight <- ggplot(data, aes(y = weight)) +
+  geom_boxplot() +
+  labs(title = "Weight", y = "lbs (libras)")
+
+gridExtra::grid.arrange(bxplt_height, bxplt_weight, ncol = 2)
+```
+
+En estos, se observa la presencia de dos outliers para el caso de $weight$, mientras que para $height$ únicamete se presenta un dato "raro", el cual tiene un valor de 29.50 pulgadas. Para evitar sesgos en los modelos de predicción, se optó por eliminar los registros correspondientes a estos datos atípicos.
+
+También se eliminaron observaciones con valores cero en la variable $brozek$.
+
+```{r prep 2, include=FALSE}
+# Quitamos esas observaciones y también en donde brozek es cero
+data <- data[-which(data$height<50),]
+data <- data[-which(data$weight>250),]
+data <- data[-which(data$brozek==0),]
+
+# xnames son las variables predictoras (todas menos brozek)
+xnames <- colnames(data)[2:15]
+```
+
+Una vez realizado el preprocesamiento anterior, se comenzó ajustando un modelo lineal generalizado con liga identidad y distribución Gaussiana. Para esto, se consideraron cuatro modelos: con efectos principales, efectos principales más interacciones de segundo orden, efectos principales más las variables al cuadrado y un últimos más complejo, con efectos principales más interacciones de segundo orden y variables al cuadrado. Para hacer una comparación de los modelos, todos se entrenaron bajo el mismo esquema (K-Cross Validation) con $K=5$ iteraciones, y se calcularon métricas para analizar los errores de los resultados: $MSE$, $MAE$ y el coeficiente de correlación al cuadrado $R^2$.
+
+```{r inc i, include=FALSE}
+##############################
+### Modelos a explorar indicados en el inciso i)
+##############################
+
+# K-Cross Validation
+# K=5, train (aprox 80%) y test (aprox 20%)
+n=dim(data)[1]
+# usamos un vector con valores del 1 a K
+K=5
+(labK=rep(1:K, length.out = n))
+table(labK)
+
+# realizamos una permutacion aleatoria de los pliegues
+set.seed(1234)
+(Pliegues <- sample(labK))  #seleccionados n de n, pero orden aleatorio
+KCV=function(x, Plie, Dat, Form){
+  train <- which(Plie != x)
+  test = (-train)
+  mod = glm(Form, family = gaussian(link = "identity"), Dat[train,])
+  predm = predict(mod, Dat[test,])
+  summ = summary(mod)
+  MSE = mean((Dat$brozek[test]-predm)^2)
+  MAE = mean(abs(Dat$brozek[test]-predm))
+  COR = summ$deviance/summ$null.deviance
+  return(c(MSE, MAE, COR))
+}
+
+
+# Formula de efectos principales + cuadrado de las variables
+formula_prin_cuad <- as.formula(  paste('brozek ~ .',"+", paste(paste('I(',xnames,'^2)',collapse = ' + ')  ) ))
+# Formula de efectos principales + algunas interacciones + cuadrado de las variables
+formula_inte_cuad <- as.formula(  paste('brozek ~ .^2',"+", paste(paste('I(',xnames,'^2)',collapse = ' + ')  ) )) 
+
+
+# Modelo con efectos principales
+Metricas.K.mod1 = sapply(1:K, KCV, Plie=Pliegues, Dat=data, Form=brozek ~ .)
+# Modelo con efectos principales + interacciones
+Metricas.K.mod2 = sapply(1:K, KCV, Plie=Pliegues, Dat=data, Form=brozek ~ .^2)
+# Modelo con efectos principales + cuadrado de las variables
+Metricas.K.mod3 = sapply(1:K, KCV, Plie=Pliegues, Dat=data, Form=formula_prin_cuad)
+# Modelo con efectos principales + interacciones + cuadrado de las variables
+Metricas.K.mod4 = sapply(1:K, KCV, Plie=Pliegues, Dat=data, Form=formula_inte_cuad)
+
+# Estimacion del poder predictivo usando:
+# MSE y K_cv method es
+MSE.KCV.mod1=mean(Metricas.K.mod1[1,])
+MSE.KCV.mod2=mean(Metricas.K.mod2[1,])
+MSE.KCV.mod3=mean(Metricas.K.mod3[1,])
+MSE.KCV.mod4=mean(Metricas.K.mod4[1,])
+# MAE y K_cv method es
+MAE.KCV.mod1=mean(Metricas.K.mod1[2,])
+MAE.KCV.mod2=mean(Metricas.K.mod2[2,])
+MAE.KCV.mod3=mean(Metricas.K.mod3[2,])
+MAE.KCV.mod4=mean(Metricas.K.mod4[2,])
+# Coef. de correlacion al cuadrado y K_cv method es
+COR.KCV.mod1=mean(Metricas.K.mod1[3,])
+COR.KCV.mod2=mean(Metricas.K.mod2[3,])
+COR.KCV.mod3=mean(Metricas.K.mod3[3,])
+COR.KCV.mod4=mean(Metricas.K.mod4[3,])
+```
+
+Después, se utilizaron dos métodos distintos para la selección de variables en los modelos: el método por pasos con dirección "both", y el método de selección lasso. Esto con el objetivo de reducir el número de variables y analizar si con esto se obtienen métricas de error más reducidas. Por tanto para estos nuevos modelos también se calcularon el $MSE$, $MAE$ y $R^2$, para poder hacer una comparación directa del poder predictivo.
+
+```{r seleccion_step, include=FALSE, eval=FALSE}
+# Cambiar a eval=TRUE para verificar los resultados. Es algo tardado
+##############################
+### Modelos a explorar indicados en el inciso ii)
+##############################
+
+##############################
+### Quinto modelo a explorar
+### Efectos principales y seleccion por pasos usando criterio BIC
+##############################
+
+
+mod5KCV=function(x, Plie, Dat){
+  train <- which(Plie != x)
+  test = (-train)
+  assign("DatosAux", Dat[train,], envir = .GlobalEnv) #Cuidado stepAIC busca la base de datos en e environment global 
+  modAux=glm(brozek ~ ., data=DatosAux, family=gaussian(link="identity"))
+  penAux=log(dim(DatosAux)[1])
+  modtr=stepAIC(modAux, scope =list(upper = ~., lower = ~1), trace =FALSE,direction="both", k=penAux)
+  predte=predict(modtr, newdata = Dat[test,], type = "response")
+  summ = summary(modtr)
+  
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  COR = summ$deviance/summ$null.deviance
+  
+  var_select = names(coef(modtr))
+  return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod5=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod5KCV(ik,Plie=Pliegues, Dat=data)
+  Metricas.K.mod5[,ik] = result$metricas
+  variables.mod5 = result$variables
+}
+
+MSE.KCV.mod5=mean(Metricas.K.mod5[1,])
+MAE.KCV.mod5=mean(Metricas.K.mod5[2,])
+COR.KCV.mod5=mean(Metricas.K.mod5[3,])
+
+##############################
+### Sexto modelo a explorar
+### Incluyendo interacciones de segundo orden
+### entre variables y seleccion por pasos usando criterio BIC
+##############################
+
+
+mod6KCV=function(x, Plie, Dat){
+  train <- which(Plie != x)
+  test = (-train)
+  assign("DatosAux", Dat[train,], envir = .GlobalEnv) #Cuidado stepAIC busca la base de datos en e environment global 
+  modAux=glm(brozek ~ .^2, data=DatosAux, family=gaussian(link="identity"))
+  penAux=log(dim(DatosAux)[1])
+  modtr=stepAIC(modAux, scope =list(upper = ~.^2, lower = ~1), trace =FALSE,direction="both", k=penAux)
+  predte=predict(modtr, newdata = Dat[test,], type = "response")
+  summ = summary(modtr)
+  
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  COR = summ$deviance/summ$null.deviance
+  
+  var_select = names(coef(modtr))
+  return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod6=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod6KCV(ik,Plie=Pliegues, Dat=data)
+  Metricas.K.mod6[,ik] = result$metricas
+  variables.mod6 = result$variables
+}
+
+MSE.KCV.mod6=mean(Metricas.K.mod6[1,])
+MAE.KCV.mod6=mean(Metricas.K.mod6[2,])
+COR.KCV.mod6=mean(Metricas.K.mod6[3,])
+
+##############################
+### Séptimo modelo a explorar
+### Incluyendo las variables al cuadrado
+### y seleccion por pasos usando criterio BIC
+##############################
+
+# se requiere una f?rmula para definir el modelo m?s complejo
+upperfor=as.formula(  paste('~.',"+", paste('I(',xnames,'^2)',collapse = ' + ') ) ) 
+
+mod7KCV=function(x, Plie, Dat,form, upform){
+  train <- which(Plie != x)
+  test = (-train)
+  assign("DatosAux", Dat[train,], envir = .GlobalEnv) #Cuidado stepAIC busca la base de datos en e environment global 
+  modAux=glm(form, data=DatosAux, family=gaussian(link="identity"))
+  penAux=log(dim(DatosAux)[1])
+  modtr=stepAIC(modAux, scope =list(upper = upform, lower = ~1), trace =FALSE,direction="both", k=penAux)
+  predte=predict(modtr, newdata = Dat[test,], type = "response")
+  summ = summary(modtr)
+  
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  COR = summ$deviance/summ$null.deviance
+  
+  var_select = names(coef(modtr))
+  return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod7=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod7KCV(ik,Plie=Pliegues, Dat=data, form=formula_prin_cuad, upform=upperfor)
+  Metricas.K.mod7[,ik] = result$metricas
+  variables.mod7 = result$variables
+}
+
+MSE.KCV.mod7=mean(Metricas.K.mod7[1,])
+MAE.KCV.mod7=mean(Metricas.K.mod7[2,])
+COR.KCV.mod7=mean(Metricas.K.mod7[3,])
+
+##############################
+### Octavo modelo a explorar
+### Incluyendo las interacciones y las variables al cuadrado
+### seleccion por pasos usando criterio BIC
+##############################
+
+# se requiere una formula para definir el modelo mas complejo
+upperfor2=as.formula(  paste('~.^2',"+", paste('I(',xnames,'^2)',collapse = ' + ') ) ) 
+
+mod8KCV=function(x, Plie, Dat,form, upform){
+  train <- which(Plie != x)
+  test = (-train)
+  assign("DatosAux", Dat[train,], envir = .GlobalEnv) #Cuidado stepAIC busca la base de datos en e environment global 
+  modAux=glm(form, data=DatosAux, family=gaussian(link="identity"))
+  penAux=log(dim(DatosAux)[1])
+  modtr=stepAIC(modAux, scope =list(upper = upform, lower = ~1), trace =FALSE,direction="both", k=penAux)
+  predte=predict(modtr, newdata = Dat[test,], type = "response")
+  summ = summary(modtr)
+  
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  COR = summ$deviance/summ$null.deviance
+  
+  var_select = names(coef(modtr))
+  return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod8=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod8KCV(ik,Plie=Pliegues, Dat=data, form=formula_inte_cuad, upform=upperfor2)
+  Metricas.K.mod8[,ik] = result$metricas
+  variables.mod8 = result$variables
+}
+
+MSE.KCV.mod8=mean(Metricas.K.mod8[1,])
+MAE.KCV.mod8=mean(Metricas.K.mod8[2,])
+COR.KCV.mod8=mean(Metricas.K.mod8[3,])
+```
+
+```{r}
+#Resultados de los modelos, "a mano".
+MSE.KCV.mod5=17.99459
+MAE.KCV.mod5=3.501602
+COR.KCV.mod5=0.268049
+variables.mod5 = "(Intercept), age, adipos, chest, abdom, wrist"
+
+MSE.KCV.mod6=31.38045
+MAE.KCV.mod6=4.373213
+COR.KCV.mod6=0.175537
+variables.mod6 = "Variables principales, age:weight, age:knee, age:biceps, age:wrist, weight:adipos, weight:knee, height:neck, height:hip, height:thigh, height:biceps, adipos:thigh, adipos:knee, neck:ankle, neck:forearm, hip:thigh, hip:biceps, thigh:biceps, ankle:wrist, forearm:wrist, age:weight:knee, height:hip:biceps, height:thigh:biceps"
+
+MSE.KCV.mod7=17.969435
+MAE.KCV.mod7=3.504692
+COR.KCV.mod7=0.259308
+variables.mod7 = "(Intercept), weight, wrist, I(weight^2), I(abdom^2)"
+
+MSE.KCV.mod8=1160.740489
+MAE.KCV.mod8=11.77935
+COR.KCV.mod8=0.051987
+variables.mod8 = "Variables principales, I(height^2), I(adipos^2), I(neck^2), I(chest^2), I(abdom^2), I(hip^2), I(thigh^2), I(ankle^2), I(forearm^2), age:weight, age:height, age:adipos, age:neck, age:chest, age:abdom, age:knee, age:ankle, age:biceps, age:forearm, weight:neck, weight:chest, weight:thigh, weight:biceps, height:adipos, height:neck, height:chest, height:thigh, height:knee, height:biceps, height:forearm, adipos:neck, adipos:chest, adipos:abdom, adipos:hip, adipos:thigh, adipos:knee, adipos:ankle, adipos:forearm, neck:chest, neck:biceps, neck:forearm, neck:wrist, chest:abdom, chest:thigh, chest:knee, chest:ankle, chest:forearm, abdom:hip, abdom:forearm, abdom:wrist, hip:thigh, hip:ankle, thigh:forearm, knee:wrist, ankle:biceps, ankle:wrist, forearm:wrist, biceps:I(height^2), age:I(neck^2), neck:I(neck^2), height:I(adipos^2), age:height:knee, height:chest:thigh, height:neck:biceps, neck:chest:forearm"
+```
+
+```{r seleccion_lasso, include=FALSE}
+##############################
+### Modelos a explorar indicados en el inciso iii)
+##############################
+
+##############################
+### Noveno modelo a explorar
+### Efectos principales y seleccion por pasos usando método lasso
+##############################
+mod9KCV=function(x, Plie, Dat){
+  train <- which(Plie != x)
+  test = (-train)
+  DatosAux = Dat[train,]
+  Xmod <- model.matrix(brozek ~ ., data=data)[,-1]
+  Ymod <- data[,"brozek"] 
+
+  set.seed(1)
+  mod.lasso.tun=cv.glmnet(Xmod, Ymod, nfolds = 5, type.measure ="class", gamma = 0, 
+                          relax = FALSE, family = gaussian(link="identity"), 
+                          nlambda = 50)
+  predte = predict(mod.lasso.tun, newx = Xmod[test,], type = "response", s = "lambda.min")
+  summ = summary(mod.lasso.tun)
+  
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  RSS = sum((Dat$brozek[test]-predte)^2)
+  SST <- sum((Dat$brozek[test] - mean(Dat$brozek[test]))^2)  # Suma total de los cuadrados
+  COR = 1 - RSS / SST
+  var_select = names(which(rowSums(coef(mod.lasso.tun)) != 0))
+  return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod9=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod9KCV(ik,Plie=Pliegues, Dat=data)
+  Metricas.K.mod9[,ik] = result$metricas
+  variables.mod9 = result$variables
+}
+
+MSE.KCV.mod9=mean(Metricas.K.mod9[1,])
+MAE.KCV.mod9=mean(Metricas.K.mod9[2,])
+COR.KCV.mod9=mean(Metricas.K.mod9[3,])
+
+##############################
+### Decimo modelo a explorar
+### Incluyendo interacciones de segundo orden
+### entre variables y seleccion por método lasso
+##############################
+
+
+mod10KCV=function(x, Plie, Dat){
+  train <- which(Plie != x)
+  test = (-train)
+  DatosAux = Dat[train,]
+  Xmod <- model.matrix(brozek ~ .^2, data=data)[,-1]
+  Ymod <- data[,"brozek"] 
+
+  set.seed(1)
+  mod.lasso.tun=cv.glmnet(Xmod, Ymod, nfolds = 5, type.measure ="class", gamma = 0, 
+                          relax = FALSE, family = gaussian(link="identity"), 
+                          nlambda = 50)
+  predte = predict(mod.lasso.tun, newx = Xmod[test,], type = "response", s = "lambda.min")
+  summ = summary(mod.lasso.tun)
+  
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  RSS = sum((Dat$brozek[test]-predte)^2)
+  SST <- sum((Dat$brozek[test] - mean(Dat$brozek[test]))^2)  # Suma total de los cuadrados
+  COR = 1 - RSS / SST
+  var_select = names(which(rowSums(coef(mod.lasso.tun)) != 0))
+  return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod10=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod10KCV(ik,Plie=Pliegues, Dat=data)
+  Metricas.K.mod10[,ik] = result$metricas
+  variables.mod10 = result$variables
+}
+
+MSE.KCV.mod10=mean(Metricas.K.mod10[1,])
+MAE.KCV.mod10=mean(Metricas.K.mod10[2,])
+COR.KCV.mod10=mean(Metricas.K.mod10[3,])
+
+##############################
+### 11vo modelo a explorar
+### Incluyendo las variables al cuadrado
+### y seleccion por método lasso
+##############################
+
+mod11KCV=function(x, Plie, Dat){
+  train <- which(Plie != x)
+  test = (-train)
+  DatosAux = Dat[train,]
+  Xmod <- model.matrix(formula_prin_cuad, data=data)[,-1]
+  Ymod <- data[,"brozek"] 
+
+  set.seed(1)
+  mod.lasso.tun=cv.glmnet(Xmod, Ymod, nfolds = 5, type.measure ="class", gamma = 0, relax = FALSE, family = gaussian(link="identity"), nlambda = 50)
+  predte = predict(mod.lasso.tun, newx = Xmod[test,], type = "response", s = "lambda.min")
+  summ = summary(mod.lasso.tun)
+  
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  RSS = sum((Dat$brozek[test]-predte)^2)
+  SST <- sum((Dat$brozek[test] - mean(Dat$brozek[test]))^2)  # Suma total de los cuadrados
+  COR = 1 - RSS / SST
+  var_select = names(which(rowSums(coef(mod.lasso.tun)) != 0))
+   return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod11=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod11KCV(ik,Plie=Pliegues, Dat=data)
+  Metricas.K.mod11[,ik] = result$metricas
+  variables.mod11 = result$variables
+}
+
+MSE.KCV.mod11=mean(Metricas.K.mod11[1,])
+MAE.KCV.mod11=mean(Metricas.K.mod11[2,])
+COR.KCV.mod11=mean(Metricas.K.mod11[3,])
+
+##############################
+### 12vo modelo a explorar
+### Incluyendo las interacciones y las variables al cuadrado
+### seleccion por método lasso
+##############################
+
+mod12KCV=function(x, Plie, Dat){
+  train <- which(Plie != x)
+  test = (-train)
+  DatosAux = Dat[train,]
+  Xmod <- model.matrix(formula_inte_cuad, data=data)[,-1]
+  Ymod <- data[,"brozek"] 
+
+  set.seed(1)
+  mod.lasso.tun=cv.glmnet(Xmod, Ymod, nfolds = 5, type.measure ="class", gamma = 0, 
+                          relax = FALSE, family = gaussian(link="identity"), 
+                          nlambda = 50)
+  predte = predict(mod.lasso.tun, newx = Xmod[test,], type = "response", s = "lambda.min")
+  summ = summary(mod.lasso.tun)
+  
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  RSS = sum((Dat$brozek[test]-predte)^2)
+  SST <- sum((Dat$brozek[test] - mean(Dat$brozek[test]))^2)  # Suma total de los cuadrados
+  COR = 1 - RSS / SST
+  var_select = names(which(rowSums(coef(mod.lasso.tun)) != 0))
+ return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod12=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod12KCV(ik,Plie=Pliegues, Dat=data)
+  Metricas.K.mod12[,ik] = result$metricas
+  variables.mod12 = result$variables
+}
+
+MSE.KCV.mod12=mean(Metricas.K.mod12[1,])
+MAE.KCV.mod12=mean(Metricas.K.mod12[2,])
+COR.KCV.mod12=mean(Metricas.K.mod12[3,])
+
+```
+
+Finalmente, para abarcar una mayor gama de modelos a comparar, se optó por considerar un modelo lineal generalizado con distribución Gamma, con todas sus ligas posibles, es decir: identidad, inversa y logarítmica. Para estos también se realizó una selección de variables por el método lasso, ya que, fue el método con el que se obtuvieron los resultados con más rapidez.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+##############################
+### 13vo modelo a explorar
+### Incluyendo las interacciones y las variables al cuadrado
+### seleccion por método lasso (distribución Gamma, liga inversa)
+##############################
+
+mod13KCV=function(x, Plie, Dat){
+  train <- which(Plie != x)
+  test = (-train)
+  DatosAux = Dat[train,]
+  Xmod <- model.matrix(formula_inte_cuad, data=data)[,-1]
+  Ymod <- data[,"brozek"] 
+
+  set.seed(1)
+  mod.lasso.tun=cv.glmnet(Xmod, Ymod, nfolds = 5, type.measure ="class", gamma = 0, 
+                          relax = FALSE, family = Gamma(link="inverse"), 
+                          nlambda = 50)
+  predte = predict(mod.lasso.tun, newx = Xmod[test,], type = "response", s = "lambda.min")
+  summ = summary(mod.lasso.tun)
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  RSS = sum((Dat$brozek[test]-predte)^2)
+  SST <- sum((Dat$brozek[test] - mean(Dat$brozek[test]))^2)  # Suma total de los cuadrados
+  COR = 1 - RSS / SST
+  var_select = names(which(rowSums(coef(mod.lasso.tun)) != 0))
+  return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod13=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod13KCV(ik,Plie=Pliegues, Dat=data)
+  Metricas.K.mod13[,ik] = result$metricas
+  variables.mod13 = result$variables
+}
+
+MSE.KCV.mod13=mean(Metricas.K.mod13[1,])
+MAE.KCV.mod13=mean(Metricas.K.mod13[2,])
+COR.KCV.mod13=mean(Metricas.K.mod13[3,])
+
+##############################
+### 14vo modelo a explorar
+### Incluyendo las interacciones y las variables al cuadrado
+### seleccion por método lasso (distribución Gamma, liga identidad)
+##############################
+
+mod14KCV=function(x, Plie, Dat){
+  train <- which(Plie != x)
+  test = (-train)
+  DatosAux = Dat[train,]
+  Xmod <- model.matrix(formula_inte_cuad, data=data)[,-1]
+  Ymod <- data[,"brozek"] 
+
+  set.seed(1)
+  mod.lasso.tun=cv.glmnet(Xmod, Ymod, nfolds = 5, type.measure ="class", gamma = 0, relax = FALSE, family = Gamma(link="identity"), nlambda = 50)
+  predte = predict(mod.lasso.tun, newx = Xmod[test,], type = "response", s = "lambda.min")
+  summ = summary(mod.lasso.tun)
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  RSS = sum((Dat$brozek[test]-predte)^2)
+  SST <- sum((Dat$brozek[test] - mean(Dat$brozek[test]))^2)  # Suma total de los cuadrados
+  COR = 1 - RSS / SST
+  var_select = names(which(rowSums(coef(mod.lasso.tun)) != 0))
+  return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod14=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod14KCV(ik,Plie=Pliegues, Dat=data)
+  Metricas.K.mod14[,ik] = result$metricas
+  variables.mod14 = result$variables
+}
+
+MSE.KCV.mod14=mean(Metricas.K.mod14[1,])
+MAE.KCV.mod14=mean(Metricas.K.mod14[2,])
+COR.KCV.mod14=mean(Metricas.K.mod14[3,])
+
+##############################
+### 15vo modelo a explorar
+### Incluyendo las interacciones y las variables al cuadrado
+### seleccion por método lasso (distribución Gamma, liga log)
+##############################
+
+mod15KCV=function(x, Plie, Dat){
+  train <- which(Plie != x)
+  test = (-train)
+  DatosAux = Dat[train,]
+  Xmod <- model.matrix(formula_inte_cuad, data=data)[,-1]
+  Ymod <- data[,"brozek"] 
+
+  set.seed(1)
+  mod.lasso.tun=cv.glmnet(Xmod, Ymod, nfolds = 5, type.measure ="class", gamma = 0, relax = FALSE, family = Gamma(link="log"), nlambda = 50)
+  predte = predict(mod.lasso.tun, newx = Xmod[test,], type = "response", s = "lambda.min")
+  summ = summary(mod.lasso.tun)
+  MSE = mean((Dat$brozek[test]-predte)^2)
+  MAE = mean(abs(Dat$brozek[test]-predte))
+  RSS = sum((Dat$brozek[test]-predte)^2)
+  SST <- sum((Dat$brozek[test] - mean(Dat$brozek[test]))^2)  # Suma total de los cuadrados
+  COR = 1 - RSS / SST
+  var_select = names(which(rowSums(coef(mod.lasso.tun)) != 0))
+   return(list(metricas=c(MSE, MAE, COR), variables=var_select))
+}
+
+Metricas.K.mod15=matrix(NA,ncol=K,nrow=3)
+for(ik in 1:K){
+  result = mod15KCV(ik,Plie=Pliegues, Dat=data)
+  Metricas.K.mod15[,ik] = result$metricas
+  variables.mod15 = result$variables
+}
+
+MSE.KCV.mod15=mean(Metricas.K.mod15[1,])
+MAE.KCV.mod15=mean(Metricas.K.mod15[2,])
+COR.KCV.mod15=mean(Metricas.K.mod15[3,])
+```
+
+```{r tab_valores, echo=FALSE, message=FALSE, warning=FALSE}
+#Realizamos una tabla que contenga las formula, la familia, la liga, el método, el MSE, el MAE y el coeficiente de correlación al cuadrado
+Formula_i<-c("brozek ~ .",
+            "brozek ~ .^2",
+            "brozek ~ . + I(variables)^2",
+            "brozek ~ .^2 + I(variables)^2")
+Variables_i <- c("Variables principales", "Variables principales, Interacciones de segundo orden", "Variables principales, Variables al cuadrado", "Variables principales, Interacciones de segundo orden, Variables al cuadrado")
+Familia_i<-rep("Gaussiana", 4)
+Liga_i<-rep("Identidad", 4)
+Seleccion_i<-rep("NO", 4)
+MSE_i<-c(MSE.KCV.mod1,MSE.KCV.mod2,MSE.KCV.mod3,MSE.KCV.mod4)
+MAE_i<-c(MAE.KCV.mod1, MAE.KCV.mod2, MAE.KCV.mod3, MAE.KCV.mod4)
+CORR_i<-c(COR.KCV.mod1, COR.KCV.mod2, COR.KCV.mod3, COR.KCV.mod4)
+#Realizamos una tabla que contenga las formula, la familia, la liga, el método, el MSE, el MAE y el coeficiente de correlación al cuadrado
+Variables_ii <- c(paste(variables.mod5, collapse = ", "),
+                  paste(variables.mod6, collapse = ", "),
+                  paste(variables.mod7, collapse = ", "),
+                  paste(variables.mod8, collapse = ", "))
+Familia_ii<-rep("Gaussiana",4)
+Liga_ii<-rep("Identidad",4)
+Seleccion_ii<-rep("Step",4)
+MSE_ii<-c(MSE.KCV.mod5,MSE.KCV.mod6,MSE.KCV.mod7,MSE.KCV.mod8)
+MAE_ii<-c(MAE.KCV.mod5, MAE.KCV.mod6, MAE.KCV.mod7, MAE.KCV.mod8)
+CORR_ii<-c(COR.KCV.mod5, COR.KCV.mod6, COR.KCV.mod7, COR.KCV.mod8)
+
+#Realizamos una tabla que contenga las formula, la familia, la liga, el método, el MSE, el MAE y el coeficiente de correlación al cuadrado
+Variables_iii <- c(paste(variables.mod9, collapse = ", "),
+                   paste(variables.mod10, collapse = ", "),
+                   paste(variables.mod11, collapse = ", "),
+                   paste(variables.mod12, collapse = ", "))
+Familia_iii<-rep("Gaussiana",4)
+Liga_iii<-rep("Identidad",4)
+Seleccion_iii<-rep("Lasso",4)
+MSE_iii<-c(MSE.KCV.mod9,MSE.KCV.mod10,MSE.KCV.mod11,MSE.KCV.mod12)
+MAE_iii<-c(MAE.KCV.mod9, MAE.KCV.mod10, MAE.KCV.mod11, MAE.KCV.mod12)
+CORR_iii<-c(COR.KCV.mod9, COR.KCV.mod10, COR.KCV.mod11, COR.KCV.mod12)
+
+#Realizamos una tabla que contenga las formula, la familia, la liga, el método, el MSE, el MAE y el coeficiente de correlación al cuadrado
+Formula_iv<-c(
+            "brozek ~ .^2 + I(variables)^2",
+            "brozek ~ .^2 + I(variables)^2",
+            "brozek ~ .^2 + I(variables)^2")
+Variables_iv <- c(paste(variables.mod13, collapse = ", "),
+                  paste(variables.mod14, collapse = ", "),
+                  paste(variables.mod15, collapse = ", "))
+Familia_iv<-rep("Gamma", 3)
+Liga_iv<-c("Inversa","Identidad", "Log")
+Seleccion_iv<-rep("Lasso",3)
+MSE_iv<-c(MSE.KCV.mod13,MSE.KCV.mod14,MSE.KCV.mod15)
+MAE_iv<-c(MAE.KCV.mod13, MAE.KCV.mod14, MAE.KCV.mod15)
+CORR_iv<-c(COR.KCV.mod13, COR.KCV.mod14, COR.KCV.mod15)
+```
+
+Finalmente, se presenta a continuación los resultados de los 15 modelos mencionados anteriormente, entrenados bajo el esquema 5-CV.
+
+```{r tabla, echo=FALSE, message=FALSE, warning=FALSE}
+df<-data_frame("#"=c(1:15),
+               "Fórmula"=c(Formula_i,Formula_i,Formula_i,Formula_iv),
+               #"Familia"=c(Familia_i,Familia_ii,Familia_iii,Familia_iv), 
+               #"Liga"=c(Liga_i,Liga_ii,Liga_iii,Liga_iv), 
+               "Selección"=c(Seleccion_i, Seleccion_ii, Seleccion_iii, Seleccion_iv),
+               "Variables"=c(Variables_i, Variables_ii, Variables_iii, Variables_iv),
+               "MSE"=c(MSE_i,MSE_ii,MSE_iii,MSE_iv), 
+               "MAE"=c(MAE_i,MAE_ii,MAE_iii,MAE_iv), 
+               "CORR"=c(CORR_i,CORR_ii,CORR_iii,CORR_iv))
+kable(df,format="latex", align = "l", booktabs=T, escape = T, longtable=TRUE,
+      caption="Esquemas de entrenamiento con sus respectivas métricas para comparar el poder predictivo de cada modelo") %>% column_spec(4, width="7cm") %>% column_spec(2, width="2.3cm") %>% kable_styling(latex_options = c("HOLD_position", "scale_down"), repeat_header_continued = TRUE) 
+```
+
+```{r lambda_tun, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+mod13_lambda=function(x, Plie, Dat){
+  train <- which(Plie != x)
+  test = (-train)
+  DatosAux = Dat[train,]
+  Xmod <- model.matrix(formula_inte_cuad, data=data)[,-1]
+  Ymod <- data[,"brozek"] 
+
+  set.seed(1)
+  mod.lasso.tun=cv.glmnet(Xmod, Ymod, nfolds = 5, type.measure ="class", gamma = 0, relax = FALSE, family = Gamma(link="inverse"), nlambda = 50)
+  lamb=mod.lasso.tun$lambda.min
+  return(lamb)
+}
+
+#Valor del lambda tuneado
+print(mod13_lambda(ik,Plie=Pliegues, Dat=data))
+```
+
+Como una descripción de estos resultados, cabe mencionar que todos los modelos son ajustes lineales genralizados con distribución Gaussiana y liga identidad, excepto por los últimos tres modelos: 13, 14 y 15; para los cuales se utilizó la distribución Gamma con ligas inversa, identidad y logarítmica; respectivamente. También se debe mencionar que para los casos en los que se hizo una selección de variables con el método lasso, se realizó cross-validation (con $k=5$) para tunear el parámetro lambda (escogiendo el $lambda.min$ en todos los casos), y en los que se realizó el método step, se hizo en ambas direcciones.
+
+Notamos que, el incluir todas las variables posibles con distintas transformaciones no necesariamente es de ayuda para mejorar el poder predictivo, por ejemplo, el modelo 8 es el que cuenta con la mayor cantidad de variables pero es el que peor le va en la predicción del porcentaje de grasa corporal, y en cambio, modelos más sencillos como el 9, que cuenta con sólo 4 variables, se encuentra entre los 5 más competitivos.
+
+Las variables con mayor poder predictivo resultan ser las que aparecen con mayor frecuencia en los modelos analizados, en este caso resultan ser: $age$, $height$, $weight$, $wrist$, $abdom$ y $adipos$.
+
+Finalmente, el modelo a elegir es con el que se obtienen los errores más pequeños para la predicción en general y este es el número 13, el cual se realizó con distribución Gamma y liga inversa (liga canónica de dicha distribución). Dicho modelo contiene sólo 4 variables principales, algunas variables al cuadrado e interacciones, por lo que se aprecia la utilidad de incluir esas posibilidades en el análisis. Además, este fue el único con el que se obtuvo un error MSE menor a 15, y con el coeficiente de correlación al cudrado podemos ver que esta regla explica casi el 75% de la variabilidad en los datos, por lo que es un modelo mejorable pero con cierta solidez. Cabe mencionar que el lambda tuneado para este modelo tiene un valor de $\lambda = 0.004052$ (chunk: $lambda_tun$).
