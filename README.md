@@ -1,4 +1,4 @@
-# predicciones
+# Predicciones
 
 # Contenido
 1. Predicción en el caso continuo
